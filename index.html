@@ -119,6 +119,21 @@
   .dir .t{color:var(--muted);width:68px;flex:none}
   .dir span:nth-child(2){flex:1}
   .dir b{font-weight:700}
+  /* la giornata da toccare (versione B, scelta da Gaspare l'8/11) */
+  .gtesta{display:flex;align-items:center;justify-content:space-between;margin-bottom:2px}
+  .gtesta .lab{margin:0}
+  .gtesta button{width:36px;height:30px;font-size:20px;line-height:1;color:var(--muted);border-radius:10px}
+  .gtesta button:disabled{opacity:.25}
+  .giorno{font-size:12px;font-weight:600;color:var(--muted);margin:12px 0 2px}
+  .riga{display:grid;grid-template-columns:44px minmax(0,1fr) 14px;align-items:center;gap:10px;width:100%;text-align:left;padding:10px 0;border-top:1px solid var(--linea)}
+  .riga .o{font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .riga .n{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:15px;font-weight:600}
+  .riga .n > span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .riga .n em{font-style:normal;font-weight:400;color:var(--muted);font-size:13px;white-space:nowrap}
+  .riga .n em b{color:var(--ink);font-weight:700}
+  .riga .tre{height:5px;gap:2px;margin:6px 0 0}
+  .riga .freccia{color:var(--muted);font-size:18px;line-height:1}
+  .indietro{font-size:14px;font-weight:600;color:var(--muted);margin:-6px 0 10px;padding:4px 0}
   .nota{font-size:12px;color:var(--muted);text-align:center;margin-top:14px;padding:0 10px}
   /* stati della pagina: vuota, errore, avviso */
   .vuoto{font-size:14px;color:var(--muted);line-height:1.5}
@@ -163,6 +178,7 @@ async function stagione(){
     const r = await fetch(API + '?cosa=stagione');
     const d = await r.json();
     if (!r.ok || !Array.isArray(d.partite)) throw new Error(d.errore || 'Risposta strana');
+    sistemaNomi(d.partite); (d.classifica || []).forEach(t => { if (t.corto) t.corto = corto(t.corto); });
     scrivi('calcio-stagione', JSON.stringify({ api: API, preso: Date.now(), dati: d }));
     return d;
   } catch (err) {
@@ -171,9 +187,13 @@ async function stagione(){
   }
 }
 async function diretti(id){
-  try { const r = await fetch(API + '?cosa=diretti&id=' + encodeURIComponent(id)); const d = await r.json(); return Array.isArray(d.partite) ? d.partite : []; }
+  try { const r = await fetch(API + '?cosa=diretti&id=' + encodeURIComponent(id)); const d = await r.json(); return Array.isArray(d.partite) ? sistemaNomi(d.partite) : []; }
   catch { return []; }
 }
+
+// Nomi più corti da leggere: "Como 1907" → "Como", "Venezia FC" → "Venezia"
+const corto = s => String(s || '').replace(/\s+(FC|CFC|AC|SSC|1907|\d{4})$/i, '').replace(/^(FC|AC|AS|SS|US)\s+/i, '');
+function sistemaNomi(lista){ lista.forEach(p => { [p.casa, p.fuori].forEach(t => { if (t && t.corto) t.corto = corto(t.corto); }); }); return lista; }
 
 // ---------- Trovare le squadre da quello che scrivi ----------
 const pulisci = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
@@ -205,9 +225,12 @@ const dividi = testo => String(testo).split(/\s*(?:[-–—]|\bvs\.?(?=\s)|\bcon
 
 // ---------- I conti ----------
 // Modello di Poisson: per ogni squadra si stimano i gol attesi in questa partita
-// (attacco di chi gioca in casa × difesa di chi gioca fuori, e viceversa, rispetto alla media del campionato),
-// poi si calcola la probabilità di ogni risultato. Con poche partite giocate i numeri tirano verso la media (K).
-const K = 3;
+// = media del campionato per chi gioca in casa (o fuori) × attacco di chi segna × difesa dell'altra.
+// Attacco e difesa si contano su TUTTE le partite della squadra (casa + fuori: il doppio dei dati);
+// il vantaggio di giocare in casa è uguale per tutti, quello medio del campionato.
+// Con poche partite i numeri tirano verso la media: come se ogni squadra avesse K partite "medie" in più.
+// K = 10: per i gol di una squadra il caso pesa quanto la bravura fino a circa 10 partite.
+const K = 10;
 function poisson(l, max = 10){ const a = []; let p = Math.exp(-l); for (let k = 0; k <= max; k++){ a.push(p); p = p * l / (k + 1); } return a; }
 function griglia(lh, la){ const ph = poisson(lh), pa = poisson(la); return (f) => { let s = 0; for (let i = 0; i < ph.length; i++) for (let j = 0; j < pa.length; j++) if (f(i, j)) s += ph[i] * pa[j]; return s; }; }
 const media = (l, f) => l.length ? l.reduce((s, x) => s + f(x), 0) / l.length : 0;
@@ -217,11 +240,19 @@ function analizza(D, A, B){
   const fin = D.partite.filter(p => p.stato === 'FINISHED' && p.finale[0] != null && p.finale[1] != null);
   if (fin.length < 10) throw new Error('Il campionato è appena iniziato: servono almeno 10 partite giocate per fare i conti.');
   const Lh = media(fin, p => p.finale[0]), La = media(fin, p => p.finale[1]);
-  const forza = (l, f, L) => (l.reduce((s, p) => s + f(p), 0) + K * L) / (l.length + K) / L;
   const inCasa = id => fin.filter(p => p.casa.id === id), fuori = id => fin.filter(p => p.fuori.id === id);
   const hA = inCasa(A.id), aB = fuori(B.id);
-  const lh = Lh * forza(hA, p => p.finale[0], Lh) * forza(aB, p => p.finale[0], Lh);
-  const la = La * forza(aB, p => p.finale[1], La) * forza(hA, p => p.finale[1], La);
+  // forza(id, q, Lc, Lf): attacco e difesa della squadra rispetto alla media, con i gol di "q" (finale o intervallo)
+  const forza = (id, q, Lc, Lf) => {
+    const l = fin.filter(p => (p.casa.id === id || p.fuori.id === id) && p[q][0] != null && p[q][1] != null);
+    const G = (Lc + Lf) / 2;                                   // gol medi di una squadra in una partita
+    const fatti = l.reduce((s, p) => s + (p.casa.id === id ? p[q][0] : p[q][1]), 0);
+    const subiti = l.reduce((s, p) => s + (p.casa.id === id ? p[q][1] : p[q][0]), 0);
+    return { att: (fatti + K * G) / (l.length + K) / G, dif: (subiti + K * G) / (l.length + K) / G };
+  };
+  const fA = forza(A.id, 'finale', Lh, La), fB = forza(B.id, 'finale', Lh, La);
+  const lh = Lh * fA.att * fB.dif;
+  const la = La * fB.att * fA.dif;
   const P = griglia(lh, la);
 
   // 1 X 2 (sistemati perché facciano 100)
@@ -234,8 +265,8 @@ function analizza(D, A, B){
       { n:pc(P((i,j) => i >= j)), t:`${a} vince o pareggia`, s:`Va male solo se vince ${b}`, k:'1X' },
       { n:pc(P((i,j) => i <= j)), t:`${b} vince o pareggia`, s:`Va male solo se vince ${a}`, k:'X2' },
       { n:pc(P((i,j) => i !== j)), t:'Qualcuno vince', s:'Tutto tranne il pareggio', k:'12' },
-      { n:pc(P((i,j) => i - j >= 2)), t:`${a} vince di 2+ gol`, s:'Es. 2-0, 3-1', k:'' }
-    ]},
+      { n:pc(P((i,j) => i - j >= 2)), t:`${a} vince di 2+ gol`, s:'Es. 2-0, 3-1', k:'Handicap 1 (-1)' },
+      { n:pc(P((i,j) => j - i >= 2)), t:`${b} vince di 2+ gol`, s:'Es. 0-2, 1-3', k:'Handicap 2 (-1)' }    ]},
     { nome:'Gol', spiega:`<b>Gol totali della partita</b>: si sommano quelli di ${e(a)} e quelli di ${e(b)}. Es. 2-1 = 3 gol.`, voci:[
       { n:pc(P((i,j) => i + j >= 1)), t:'Almeno 1 gol', s:'Tutto tranne 0-0', k:'Over 0,5' },
       { n:pc(P((i,j) => i + j >= 2)), t:'Almeno 2 gol', s:'Es. 1-1, 2-0', k:'Over 1,5' },
@@ -244,7 +275,9 @@ function analizza(D, A, B){
       { n:pc(P((i,j) => i + j <= 2)), t:'Al massimo 2 gol', s:'Es. 0-0, 1-1, 2-0', k:'Under 2,5' },
       { n:pc(P((i,j) => i + j <= 3)), t:'Al massimo 3 gol', s:'Es. 1-1, 2-1, 3-0', k:'Under 3,5' },
       { n:pc(P((i,j) => i + j >= 1 && i + j <= 3)), t:'Da 1 a 3 gol', s:'Es. 1-0, 1-1, 2-1', k:'Multigol 1-3' },
-      { n:pc(P((i,j) => i + j >= 2 && i + j <= 4)), t:'Da 2 a 4 gol', s:'Es. 1-1, 2-1, 3-1', k:'Multigol 2-4' }
+      { n:pc(P((i,j) => i + j >= 2 && i + j <= 4)), t:'Da 2 a 4 gol', s:'Es. 1-1, 2-1, 3-1', k:'Multigol 2-4' },
+      { n:pc(P((i,j) => (i + j) % 2 === 0)), t:'Gol pari', s:'0, 2, 4… · es. 0-0, 1-1, 3-1', k:'Pari' },
+      { n:pc(P((i,j) => (i + j) % 2 === 1)), t:'Gol dispari', s:'1, 3, 5… · es. 1-0, 2-1', k:'Dispari' }
     ]},
     { nome:'Squadre', spiega:`<b>Gol di ogni squadra, contati da soli.</b> Per esempio "${e(a)} segna" vale anche se ${e(a)} perde 1-3.`, voci:[
       { n:pc(P((i,j) => i > 0 && j > 0)), t:'Segnano tutte e due', s:'Almeno un gol a testa · es. 1-1, 2-1', k:'Gol/Gol' },
@@ -255,6 +288,16 @@ function analizza(D, A, B){
       { n:pc(P((i,j) => j >= 2)), t:`${b} fa 2+ gol`, s:`Due o più gol di ${b}`, k:'' },
       { n:pc(P((i,j) => j === 0)), t:`${a} non prende gol`, s:`${b} resta a zero`, k:'Porta inviolata' },
       { n:pc(P((i) => i === 0)), t:`${b} non prende gol`, s:`${a} resta a zero`, k:'Porta inviolata' }
+    ]},
+    { nome:'Combo', spiega:'<b>Due cose insieme:</b> devono succedere tutte e due. Per questo la percentuale è sempre più bassa di quelle prese da sole.', voci:[
+      { n:pc(P((i,j) => i > j && i + j >= 3)), t:`Vince ${a} e almeno 3 gol`, s:'Es. 2-1, 3-0', k:'1 + Over 2,5' },
+      { n:pc(P((i,j) => i < j && i + j >= 3)), t:`Vince ${b} e almeno 3 gol`, s:'Es. 1-2, 0-3', k:'2 + Over 2,5' },
+      { n:pc(P((i,j) => i > j && j > 0)), t:`Vince ${a} e segnano tutte e due`, s:'Es. 2-1, 3-1', k:'1 + Gol/Gol' },
+      { n:pc(P((i,j) => i < j && i > 0)), t:`Vince ${b} e segnano tutte e due`, s:'Es. 1-2, 1-3', k:'2 + Gol/Gol' },
+      { n:pc(P((i,j) => i > 0 && j > 0 && i + j >= 3)), t:'Segnano tutte e due e almeno 3 gol', s:'Es. 2-1, 2-2', k:'Gol/Gol + Over 2,5' },
+      { n:pc(P((i,j) => (i === 0 || j === 0) && i + j <= 2)), t:'Una resta a zero e al massimo 2 gol', s:'Es. 0-0, 1-0, 0-2', k:'No Gol + Under 2,5' },
+      { n:pc(P((i,j) => i >= j && i + j <= 3)), t:`${a} non perde e al massimo 3 gol`, s:'Es. 1-0, 1-1, 2-1', k:'1X + Under 3,5' },
+      { n:pc(P((i,j) => i <= j && i + j <= 3)), t:`${b} non perde e al massimo 3 gol`, s:'Es. 0-1, 1-1, 1-2', k:'X2 + Under 3,5' }
     ]}
   ];
 
@@ -262,25 +305,35 @@ function analizza(D, A, B){
   const conInt = fin.filter(p => p.intervallo[0] != null && p.intervallo[1] != null);
   if (conInt.length >= 10){
     const Lh1 = media(conInt, p => p.intervallo[0]) || .01, La1 = media(conInt, p => p.intervallo[1]) || .01;
-    const hA1 = hA.filter(p => p.intervallo[0] != null), aB1 = aB.filter(p => p.intervallo[0] != null);
-    const lh1 = Math.min(Lh1 * forza(hA1, p => p.intervallo[0], Lh1) * forza(aB1, p => p.intervallo[0], Lh1), lh * .9);
-    const la1 = Math.min(La1 * forza(aB1, p => p.intervallo[1], La1) * forza(hA1, p => p.intervallo[1], La1), la * .9);
+    const iA = forza(A.id, 'intervallo', Lh1, La1), iB = forza(B.id, 'intervallo', Lh1, La1);
+    const lh1 = Math.min(Lh1 * iA.att * iB.dif, lh * .9);
+    const la1 = Math.min(La1 * iB.att * iA.dif, la * .9);
     const lh2 = lh - lh1, la2 = la - la1;
-    const T = griglia(lh1, la1);
+    const T = griglia(lh1, la1), S = griglia(lh2, la2);
     const t1 = poisson(lh1 + la1), t2 = poisson(lh2 + la2);
-    let secondo = 0; t1.forEach((x, i) => t2.forEach((y, j) => { if (j > i) secondo += x * y; }));
+    let primo = 0, secondo = 0; t1.forEach((x, i) => t2.forEach((y, j) => { if (j > i) secondo += x * y; else if (i > j) primo += x * y; }));
+    // Parziale/finale: risultato all'intervallo (1, X, 2) e alla fine, sommando i gol dei due tempi
     const h1 = poisson(lh1, 7), a1 = poisson(la1, 7), h2 = poisson(lh2, 7), a2 = poisson(la2, 7);
-    let unoUno = 0;
-    for (let i = 0; i < 8; i++) for (let j = 0; j < i; j++) for (let k = 0; k < 8; k++) for (let l = 0; l < 8; l++)
-      if (i + k > j + l) unoUno += h1[i] * a1[j] * h2[k] * a2[l];
-    categorie.push({ nome:'1º tempo', spiega:'<b>Solo i primi 45 minuti</b> (recupero compreso): il risultato all\'intervallo. Gol totali, delle due squadre insieme.', voci:[
+    const segno = d => d > 0 ? '1' : d === 0 ? 'X' : '2';
+    const pf = {};
+    for (let i = 0; i < 8; i++) for (let j = 0; j < 8; j++) for (let k = 0; k < 8; k++) for (let l = 0; l < 8; l++){
+      const c = segno(i - j) + '/' + segno(i + k - j - l);
+      pf[c] = (pf[c] || 0) + h1[i] * a1[j] * h2[k] * a2[l];
+    }
+    const chi = s => s === '1' ? `avanti ${a}` : s === '2' ? `avanti ${b}` : 'pari';
+    const vince = s => s === '1' ? `vince ${a}` : s === '2' ? `vince ${b}` : 'pareggio';
+    categorie.push({ nome:'Tempi', spiega:'<b>I due tempi presi da soli</b> (recupero compreso). Il 2º tempo conta solo i gol segnati dopo l\'intervallo: es. 1-0 all\'intervallo e 2-1 alla fine = 2 gol nel 2º tempo.', voci:[
       { n:pc(T((i,j) => i + j >= 1)), t:'Almeno 1 gol nel 1º tempo', s:'Tutto tranne 0-0 all\'intervallo', k:'Over 0,5 1ºT' },
       { n:pc(T((i,j) => i + j >= 2)), t:'Almeno 2 gol nel 1º tempo', s:'Es. 1-1, 2-0 all\'intervallo', k:'Over 1,5 1ºT' },
-      { n:pc(T((i,j) => i + j === 0)), t:'0-0 all\'intervallo', s:'Nessun gol nei primi 45\'', k:'' },
-      { n:pc(T((i,j) => i > j)), t:`${a} avanti all'intervallo`, s:`${a} conduce dopo 45'`, k:'1 1ºT' },
-      { n:pc(secondo), t:'Più gol nel 2º tempo', s:'Es. 0-0 all\'intervallo, 2-1 alla fine', k:'' },
-      { n:pc(unoUno), t:`${a} avanti all'intervallo e vince`, s:'Conduce dopo 45\' e vince alla fine', k:'1/1' }
+      { n:pc(S((i,j) => i + j >= 1)), t:'Almeno 1 gol nel 2º tempo', s:'Almeno un gol dopo l\'intervallo', k:'Over 0,5 2ºT' },
+      { n:pc(S((i,j) => i + j >= 2)), t:'Almeno 2 gol nel 2º tempo', s:'Es. 0-0 all\'intervallo, 1-1 alla fine', k:'Over 1,5 2ºT' },
+      { n:pc(primo), t:'Più gol nel 1º tempo', s:'Es. 2-0 all\'intervallo, 2-1 alla fine', k:'Tempo con più gol: 1º' },
+      { n:pc(secondo), t:'Più gol nel 2º tempo', s:'Es. 0-0 all\'intervallo, 2-1 alla fine', k:'Tempo con più gol: 2º' },
+      { n:100 - pc(primo) - pc(secondo), t:'Stessi gol nei due tempi', s:'Es. 1-0 all\'intervallo, 1-1 alla fine', k:'Tempo con più gol: X' },
+      { n:pc(T((i,j) => i + j === 0)), t:'0-0 all\'intervallo', s:'Nessun gol nei primi 45\'', k:'' }
     ]});
+    categorie.push({ nome:'Parziale/finale', spiega:'<b>Come sta all\'intervallo / come finisce.</b> Es. X/1 = pari all\'intervallo, poi vince ' + e(a) + '. I 9 casi fanno 100%.',
+      voci: Object.entries(pf).sort((x, y) => y[1] - x[1]).map(([c, p]) => ({ n: pc(p), t: `All'intervallo ${chi(c[0])}`, s: `Alla fine ${vince(c[2])}`, k: c })) });
   }
 
   // Risultato esatto: i 6 punteggi più probabili
@@ -339,7 +392,7 @@ $('app').innerHTML = `
     <input id="partita" placeholder="Es. Roma - Sassuolo" autocomplete="off" autocapitalize="words" enterkeyhint="search">
     <button id="vai">Cerca</button>
   </form>
-  <div id="scheda"><div class="carta vuoto">Scrivi una partita, per esempio <b>Roma - Sassuolo</b> (prima chi gioca in casa).<br>Le percentuali si calcolano sulle partite di Serie A giocate quest'anno.</div></div>`;
+  <div id="scheda"><div class="carta vuoto">Scarico le partite…</div></div>`;
 
 $('tema').addEventListener('click', () => { const t = html.dataset.tema === 'notte' ? 'giorno' : 'notte'; tema(t); scrivi('calcio-tema', t); });
 $('cerca').addEventListener('submit', ev => { ev.preventDefault(); cerca($('partita').value); });
@@ -395,6 +448,7 @@ function mostra(A, B, match, R, lista, avviso){
   const max = Math.max(R.p1, R.pX, R.p2);
   const cella = (l, chi, n) => `<div class="${n === max ? 'top1' : ''}"><b>${n}%</b>${l} · ${e(chi)}</div>`;
   $('scheda').innerHTML = `
+    <button class="indietro" id="indietro">‹ Tutte le partite</button>
     ${avviso ? `<p class="avviso">${e(avviso)}</p>` : ''}
     <div class="testa">
       <div class="info">${match ? `Serie A · ${e(match.giornata)}ª giornata` : 'Serie A'}</div>
@@ -454,12 +508,54 @@ function mostra(A, B, match, R, lista, avviso){
     ).join('');
   };
   $('cat').addEventListener('click', ev => { const x = ev.target.closest('.chip'); if (x) scenari(+x.dataset.i); });
+  $('indietro').addEventListener('click', () => giornata(match ? match.giornata : null));
+  window.scrollTo(0, 0);
   scenari(1);
 }
 
-// All'apertura: rifà l'ultima ricerca
-const ultima = leggi('calcio-ultima');
-if (ultima){ $('partita').value = ultima; cerca(ultima); }
+// ---------- La giornata da toccare ----------
+// Si apre sulla giornata in corso (la prima con partite ancora da giocare); ‹ › per le altre.
+const giorno = iso => { const s = new Date(iso).toLocaleDateString('it-IT', { timeZone: 'Europe/Rome', weekday: 'long', day: 'numeric', month: 'long' }); return s.charAt(0).toUpperCase() + s.slice(1); };
+async function giornata(n){
+  try {
+    const D = await stagione();
+    $('agg').hidden = false; $('agg').textContent = (D.vecchi ? 'Vecchi · ' : 'Dati delle ') + ora(D.aggiornato || new Date().toISOString());
+    const numeri = [...new Set(D.partite.map(p => p.giornata).filter(Boolean))].sort((x, y) => x - y);
+    if (!numeri.length) throw new Error('Nessuna partita in calendario.');
+    const aperta = D.partite.filter(p => p.stato !== 'FINISHED').map(p => p.giornata).sort((x, y) => x - y)[0];
+    if (!numeri.includes(n)) n = aperta || numeri[numeri.length - 1];
+    const lista = D.partite.filter(p => p.giornata === n).sort((x, y) => x.data < y.data ? -1 : 1);
+    let html = '', ultimo = '';
+    for (const p of lista){
+      const g = giorno(p.data); if (g !== ultimo){ html += `<div class="giorno">${e(g)}</div>`; ultimo = g; }
+      const a = p.casa.corto || p.casa.nome, b = p.fuori.corto || p.fuori.nome;
+      let destra = '', barra = '';
+      if (p.stato === 'FINISHED') destra = `<b>${e(p.finale[0])} – ${e(p.finale[1])}</b>`;
+      else if (['IN_PLAY', 'PAUSED'].includes(p.stato)) destra = '<b>In corso</b>';
+      // football-data a volte è in ritardo: se doveva essere finita da un pezzo, non mostro percentuali
+      else if (Date.now() - new Date(p.data) > 2.5 * 3600 * 1000) destra = 'Risultato in arrivo';
+      else {
+        try {
+          const R = analizza(D, p.casa, p.fuori), m = Math.max(R.p1, R.pX, R.p2);
+          destra = `<b>${e(m === R.p1 ? a : m === R.p2 ? b : 'Pari')}</b> ${m}%`;
+          barra = `<span class="tre"><i class="c" style="flex:${R.p1}"></i><i class="x" style="flex:${R.pX}"></i><i class="f" style="flex:${R.p2}"></i></span>`;
+        } catch {}
+      }
+      html += `<button class="riga" data-p="${e(a + ' - ' + b)}"><span class="o">${p.stato === 'FINISHED' ? 'Finita' : e(ora(p.data))}</span><span><span class="n"><span>${e(a)} – ${e(b)}</span><em>${destra}</em></span>${barra}</span><span class="freccia">›</span></button>`;
+    }
+    const k = numeri.indexOf(n);
+    $('scheda').innerHTML = `<div class="carta">
+      <div class="gtesta"><button id="prima" aria-label="Giornata prima" ${k <= 0 ? 'disabled' : ''}>‹</button><div class="lab">Serie A · ${e(n)}ª giornata</div><button id="dopo" aria-label="Giornata dopo" ${k >= numeri.length - 1 ? 'disabled' : ''}>›</button></div>
+      ${html}</div>
+      <p class="nota">Tocca una partita per la scheda completa. La percentuale è l'esito più probabile.</p>`;
+    $('prima').addEventListener('click', () => giornata(numeri[k - 1]));
+    $('dopo').addEventListener('click', () => giornata(numeri[k + 1]));
+    $('scheda').querySelectorAll('[data-p]').forEach(r => r.addEventListener('click', () => { $('partita').value = r.dataset.p; cerca(r.dataset.p); }));
+  } catch (err) { errore(err.message); }
+}
+
+// All'apertura: la giornata in corso
+giornata();
 </script>
 </body>
 </html>
